@@ -7,8 +7,16 @@ Adds **LongCat-2.0** as a model provider: 1M context, thinking mode, tool callin
 ## Install
 
 ```sh
-dsh plugin --profile default add dsh-longcat
+dsh plugin --profile default add github:YOUR_GITHUB_USER/dsh-longcat
 export LONGCAT_API_KEY=...   # create one at https://longcat.chat/platform/api_keys
+```
+
+Installing a bundle lets the package's install scripts run on your machine,
+outside the sandbox the agent runs under. Pin a commit so a later push cannot
+change what executes:
+
+```sh
+dsh plugin --profile default add github:YOUR_GITHUB_USER/dsh-longcat#COMMIT_SHA
 ```
 
 Then pick **LongCat-2.0** in the model selector. The key may also be stored
