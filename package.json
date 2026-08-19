@@ -1,0 +1,28 @@
+{
+  "name": "dsh-longcat",
+  "version": "0.1.0",
+  "description": "LongCat (LongCat-2.0) model provider for DeepSeek Harness — 1M context, thinking mode, tool calling",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "longcat",
+    "llm-provider"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/",
+    "test:e2e": "node tests/e2e.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

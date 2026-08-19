@@ -1,0 +1,59 @@
+# dsh-longcat — LongCat provider for DeepSeek Harness.
+#
+# LongCat's chat endpoint is OpenAI-compatible and speaks the DeepSeek
+# reasoning dialect (`thinking: {type: enabled|disabled}`), so this bundle is
+# configuration over the shipped `dsh-llm-pi-ai` adapter rather than a
+# hand-written wire adapter. Everything below is verified against
+# https://longcat.chat/platform/docs/zh/api/model (the model-detail endpoint,
+# which is the only page that reports capabilities).
+#
+# The API key is a *reference*: export LONGCAT_API_KEY, or store it through
+# the credentials service (the Web Models page writes it). No secret lives in
+# this file.
+
+- insert:
+    - id: llm-longcat
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          # Hand-declared route: pi-ai ships no `longcat` catalog entry, so the
+          # profile supplies the whole provider.
+          longcat:
+            displayName: LongCat
+            apiKeyEnv: LONGCAT_API_KEY
+            api: openai-completions
+            baseURL: https://api.longcat.chat/openai/v1
+
+            # pi-ai infers the reasoning dialect from the endpoint URL, and
+            # api.longcat.chat tells it nothing — without this it would speak
+            # the OpenAI dialect (`reasoning_effort`) to an endpoint that
+            # expects DeepSeek's `thinking` object, and thinking would silently
+            # never turn on.
+            compat:
+              thinkingFormat: deepseek
+              # LongCat's supported_parameters lists `thinking` but NOT
+              # `reasoning_effort`. Leaving this false keeps the unsupported
+              # parameter off the wire; the `thinking` object alone carries the
+              # on/off decision.
+              supportsReasoningEffort: false
+
+            models:
+              - id: LongCat-2.0
+                name: LongCat-2.0
+                # context_length from the model-detail endpoint.
+                contextWindow: 1048576
+                # Documented cap on the chat endpoint: max_tokens <= 131072.
+                maxTokens: 131072
+                # Only two levels are representable: LongCat's `thinking` object
+                # is binary on/off. A valueless key means "offer this level and
+                # send no effort string for it" — pi-ai collapses `off` to
+                # no-effort, which this dialect serializes as
+                # `thinking: {type: disabled}`. Verified wire output:
+                #   high -> {"thinking":{"type":"enabled"}}
+                #   off  -> {"thinking":{"type":"disabled"}}
+                # The key is quoted because a bare `off` is a boolean in strict
+                # YAML 1.1 parsers; js-yaml and `yaml` both read it as a string
+                # here, and the quotes keep it that way for every reader.
+                reasoningEfforts:
+                  'off':
+                  high: high
