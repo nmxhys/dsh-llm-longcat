@@ -16,7 +16,7 @@ outside the sandbox the agent runs under. Pin a commit so a later push cannot
 change what executes:
 
 ```sh
-dsh plugin --profile default add github:ffyuuu/dsh-longcat#89474d6c2de034b461fd99eb601c16bb7e0c00b2
+dsh plugin --profile default add github:ffyuuu/dsh-longcat#82eda415296fe869898f219ba0e09ec6977f9318
 ```
 
 Then pick **LongCat-2.0** in the model selector. The key may also be stored

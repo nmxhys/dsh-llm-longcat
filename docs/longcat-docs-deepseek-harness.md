@@ -113,7 +113,7 @@ dsh plugin --profile default add github:ffyuuu/dsh-longcat
 export LONGCAT_API_KEY=your_longcat_api_key
 ```
 
-安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束），建议固定 commit：`github:ffyuuu/dsh-longcat#89474d6c2de034b461fd99eb601c16bb7e0c00b2`。
+安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束），建议固定 commit：`github:ffyuuu/dsh-longcat#82eda415296fe869898f219ba0e09ec6977f9318`。
 
 **5. 支持的模型**
 
