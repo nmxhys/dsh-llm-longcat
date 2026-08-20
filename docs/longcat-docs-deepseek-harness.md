@@ -109,11 +109,11 @@ LongCat 使用 `thinking` 对象控制思考模式，与 OpenAI 的 `reasoning_e
 上述配置已封装为插件包，可一条命令安装：
 
 ```bash
-dsh plugin --profile default add github:YOUR_GITHUB_USER/dsh-longcat
+dsh plugin --profile default add github:ffyuuu/dsh-longcat
 export LONGCAT_API_KEY=your_longcat_api_key
 ```
 
-安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束），建议固定 commit：`github:YOUR_GITHUB_USER/dsh-longcat#COMMIT_SHA`。
+安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束），建议固定 commit：`github:ffyuuu/dsh-longcat#89474d6c2de034b461fd99eb601c16bb7e0c00b2`。
 
 **5. 支持的模型**
 
