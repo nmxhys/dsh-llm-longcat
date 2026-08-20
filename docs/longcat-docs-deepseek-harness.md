@@ -47,7 +47,7 @@ export LONGCAT_API_KEY=your_longcat_api_key
 插件会注册 `longcat` provider 路由，并自动处理 LongCat 的思考模式协议、工具调用与流式解析。API Key 通过凭证机制按请求解析，也可在 **Settings → Models** 页面保存（只写字段，实际存储于 `$DSH_HOME/.credentials.yaml`）。
 
 > 安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束）。建议固定 commit：
-> `dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#<COMMIT_SHA>`
+> `dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#<3dcb3b1b5870ba52baab053453bdbb28826e5f13>`
 
 **2. 通过配置文件**
 
