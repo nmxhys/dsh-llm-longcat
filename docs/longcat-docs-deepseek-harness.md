@@ -33,50 +33,34 @@ Web UI 默认地址为 `http://127.0.0.1:3080`。安装说明详见 DeepSeek Har
 
 ## 配置方法
 
-DeepSeek Harness 提供两种接入方式，任选其一即可。
+DeepSeek Harness 的模型能力以插件形式提供，推荐安装 LongCat 官方适配插件。
 
-**1. 通过 Web UI 配置（推荐）**
+**1. 安装插件**
 
-1. 启动 `npx @deepseek-ai/dsh web`，打开 `http://127.0.0.1:3080`
-2. 进入 **Settings → Models**
-3. 点击 **Add a custom provider**
-4. 按下表填写：
+```bash
+dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat
+export LONGCAT_API_KEY=your_longcat_api_key
+```
 
-| 字段 | 值 |
-|---|---|
-| Provider ID | `longcat` |
-| Display name | `LongCat` |
-| Base URL | `https://api.longcat.chat/openai/v1` |
-| API protocol | `openai-completions` |
-| API Key | 你的 LongCat API Key |
+安装后启动 Web UI，在模型选择器中即可看到 **LongCat-2.0**。
 
-5. 在 **Model catalog** 中点击 **Fetch available models**，选择 `LongCat-2.0`，保存
+插件会注册 `longcat` provider 路由，并自动处理 LongCat 的思考模式协议、工具调用与流式解析。API Key 通过凭证机制按请求解析，也可在 **Settings → Models** 页面保存（只写字段，实际存储于 `$DSH_HOME/.credentials.yaml`）。
 
-Provider ID 创建后不可修改（请求记录、历史会话与凭证引用都以它为键），其余字段均可编辑。API Key 为只写字段，保存后仅返回脱敏描述符，实际存储于 `$DSH_HOME/.credentials.yaml`。
+> 安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束）。建议固定 commit：
+> `dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#<COMMIT_SHA>`
 
 **2. 通过配置文件**
 
-在 `$DSH_HOME/settings.yaml` 中写入以下内容，保存后下一次请求即生效，无需重启：
+安装插件后，可在 `$DSH_HOME/settings.yaml` 中覆盖任意字段，保存后下一次请求即生效，无需重启：
 
 ```yaml
-llm-pi-ai:
-  providers:
-    longcat:
-      displayName: LongCat
-      apiKeyEnv: LONGCAT_API_KEY
-      api: openai-completions
-      baseURL: https://api.longcat.chat/openai/v1
-      compat:
-        thinkingFormat: deepseek
-        supportsReasoningEffort: false
-      models:
-        - id: LongCat-2.0
-          name: LongCat-2.0
-          contextWindow: 1048576
-          maxTokens: 131072
-          reasoningEfforts:
-            'off':
-            high: high
+llm-longcat:
+  apiKeyEnv: LONGCAT_API_KEY
+  baseURL: https://api.longcat.chat/openai/v1
+  thinking: enabled
+  reasoningEffort: high        # off | high —— LongCat 思考开关是二元的
+  maxTokens: 131072
+  defaultContextWindow: 1048576
 ```
 
 再导出 API Key：
@@ -87,35 +71,18 @@ export LONGCAT_API_KEY=your_longcat_api_key
 
 配置文件中只写环境变量名（`apiKeyEnv`），不写明文密钥。
 
-**3. 关于思考模式的两个必填项**
+**3. 关于思考模式**
 
-LongCat 使用 `thinking` 对象控制思考模式，与 OpenAI 的 `reasoning_effort` 字符串不同。DeepSeek Harness 依赖 endpoint URL 推断该方言，而 `api.longcat.chat` 无法被自动识别，因此以下两项必须显式声明：
-
-| 配置项 | 作用 |
-|---|---|
-| `thinkingFormat: deepseek` | 使用 `thinking: {"type": "enabled"}` 格式。**缺少此项会导致思考模式始终无法开启**。 |
-| `supportsReasoningEffort: false` | LongCat 不接受 `reasoning_effort` 参数，此项确保该字段不会被发送。 |
-
-配置完成后，实际发送的请求体为：
+LongCat 使用 `thinking` 对象控制思考模式，且**不接受** OpenAI 的顶层 `reasoning_effort` 参数（模型详情接口的 `supported_parameters` 只列出 `thinking`）。因此思考档位只有二元的开与关，插件对应发送的请求体为：
 
 | 选择的思考档位 | 请求体 |
 |---|---|
-| `high` | `{"thinking": {"type": "enabled"}}` |
-| `off` | `{"thinking": {"type": "disabled"}}` |
-| 未指定 | `{"thinking": {"type": "disabled"}}` |
+| `high`（思考） | `{"thinking": {"type": "enabled"}}` |
+| `off`（关闭） | `{"thinking": {"type": "disabled"}}` |
 
-**4. 使用插件包（可选）**
+选择「关闭」时会显式发送 `disabled` 而非省略该字段——省略会把决定权交回服务端默认值，这与「关闭」的语义不符。请求 `low` / `medium` / `max` 会在发起网络请求前直接失败。
 
-上述配置已封装为插件包，可一条命令安装：
-
-```bash
-dsh plugin --profile default add github:ffyuuu/dsh-longcat
-export LONGCAT_API_KEY=your_longcat_api_key
-```
-
-安装插件包会在本机执行该包的安装脚本（不受 Agent 沙箱约束），建议固定 commit：`github:ffyuuu/dsh-longcat#82eda415296fe869898f219ba0e09ec6977f9318`。
-
-**5. 支持的模型**
+**4. 支持的模型**
 
 | 模型名称 | API格式 | 描述 |
 |---|---|---|
@@ -151,12 +118,16 @@ npx @deepseek-ai/dsh web
 
 **思考模式不生效**
 
-检查 `compat.thinkingFormat` 是否为 `deepseek`。缺少该配置时，DeepSeek Harness 会按 OpenAI 方言发送 `reasoning_effort`，而 LongCat 不接受该参数，思考模式不会开启。
+确认所选档位不是「关闭」。LongCat 的思考开关是二元的（开 / 关），不支持 `low` / `medium` / `max` 档位——请求这些档位会在发起网络请求前直接报 `UNSUPPORTED_REASONING_EFFORT`。
 
 **上传图片被拒绝**
 
-LongCat-2.0 仅支持文本输入。请勿为其配置 `input: [text, image]`，否则会将本可提前拦截的请求变为服务端报错。
+LongCat-2.0 仅支持文本输入（`modality: text->text`），插件会在发送前拦截图片内容并指明模型名。
 
-**注意：`models` 是替换而非追加**
+**`UNSUPPORTED_OPTION`（stop 序列）**
 
-在 `settings.yaml` 中声明 `models` 列表会整体替换原有模型列表，需要保留的模型必须全部列出。若只想修改单个模型的字段，请改用 `modelOverrides`（以模型 ID 为键）。
+LongCat 不支持 `stop` 参数，插件选择显式报错而非静默忽略——否则生成会越过调用方依赖的停止序列。
+
+**余额不足**
+
+LongCat 用 **402** 表示 token 额度耗尽，并在 **403** 上返回 `insufficient_quota`（多数 OpenAI 兼容服务用 429）。插件将两者都归类为 `QUOTA_EXCEEDED`，不会误报为密钥错误，也不会当作限流重试。

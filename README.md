@@ -1,13 +1,31 @@
-# dsh-longcat
+# dsh-llm-longcat
 
-LongCat provider for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+LongCat adapter for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) LLM seam.
 
 Adds **LongCat-2.0** as a model provider: 1M context, thinking mode, tool calling.
+
+## Features
+
+- **Thinking mode** — recognizes LongCat's `reasoning_content` field and translates it into harness `ReasoningBlock`s
+- **Tool calling** — full function-calling support, with `arguments` kept a raw JSON string end to end
+- **Multi-turn** — replays `reasoning_content` on tool-call turns, as thinking-mode passback requires
+- **Streaming** — SSE with the `usage`-before-`finish` ordering the harness relies on
+- **Credential seam** — the key resolves per request from `ctx.credentials` or the environment; no secret in any config file
+
+## Supported models
+
+| Model | Context | Max output | Notes |
+|---|---|---|---|
+| `LongCat-2.0` | 1,048,576 | 131,072 | text-only; thinking + tool calling |
+
+Facts from `GET /openai/v1/models/LongCat-2.0`, the only documented endpoint that
+reports `supported_parameters`. Tool calling is **not** mentioned on the
+chat-completions doc page and is only visible there.
 
 ## Install
 
 ```sh
-dsh plugin --profile default add github:ffyuuu/dsh-longcat
+dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat
 export LONGCAT_API_KEY=...   # create one at https://longcat.chat/platform/api_keys
 ```
 
@@ -16,128 +34,121 @@ outside the sandbox the agent runs under. Pin a commit so a later push cannot
 change what executes:
 
 ```sh
-dsh plugin --profile default add github:ffyuuu/dsh-longcat#82eda415296fe869898f219ba0e09ec6977f9318
+dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#COMMIT_SHA
 ```
 
 Then pick **LongCat-2.0** in the model selector. The key may also be stored
-through the Web UI's Models page instead of the environment; either way it is
-resolved per request through the credential seam, and no secret is written into
-any config file.
+through the Web UI's Models page instead of the environment.
 
-## Why this is configuration, not an adapter
+## Config
 
-LongCat's chat endpoint is OpenAI-compatible, and its reasoning parameter is
-DeepSeek's `thinking: {type: enabled|disabled}` object rather than OpenAI's
-`reasoning_effort` string. DeepSeek Harness already ships an adapter that
-speaks both — `@deepseek-ai/dsh-llm-pi-ai` — so this bundle declares a route on
-it instead of implementing the `LlmAdapter` contract again.
+```yaml
+- id: llm-longcat
+  name: dsh-llm-longcat
+  config:
+    apiKeyEnv: LONGCAT_API_KEY   # default; resolved per request, never a literal key
+    baseURL: https://api.longcat.chat/openai/v1  # optional; $LONGCAT_BASE_URL then the public API
+    thinking: enabled            # optional deployment policy; `disabled` locks every request to off
+    reasoningEffort: high        # optional; off | high — LongCat's switch is binary
+    maxTokens: 131072            # optional per-request output cap
+    defaultContextWindow: 1048576
+    streamIdleTimeoutMs: 300000  # optional; five-minute default
+    retryPolicy:                 # optional; omission uses bounded normal defaults
+      mode: normal
+      maxRetries: 3
+    models:
+      - id: LongCat-2.0
+        contextWindow: 1048576
+```
 
-That is deliberate. A hand-written adapter would have to re-implement SSE
-framing, the `usage`-before-`finish` ordering rule, idle-timeout handling,
-retry-policy registration, and app-attribution headers — all of which the
-shipped adapter already does and tests. The one thing configuration cannot fix
-is a genuinely different wire protocol, and LongCat does not have one.
+A `llm-longcat:` section in `$DSH_HOME/settings.yaml` overrides any field
+without a restart: base URL, catalog, request defaults, and idle budget all
+take effect on the next request, while an in-flight stream keeps the facts it
+started with.
 
-Two switches carry the whole integration:
+## Reasoning is binary, deliberately
 
-| Setting | Why |
-|---|---|
-| `compat.thinkingFormat: deepseek` | pi-ai infers the reasoning dialect from the endpoint URL. `api.longcat.chat` tells it nothing, so without this it speaks the OpenAI dialect and **thinking silently never turns on**. |
-| `compat.supportsReasoningEffort: false` | LongCat's `supported_parameters` lists `thinking` but not `reasoning_effort`. This keeps the unsupported field off the wire. |
-
-## What gets sent
-
-`reasoningEfforts` declares a binary switch, because that is what LongCat
-exposes. The resulting request bodies:
+LongCat controls thinking with `thinking: {type: enabled|disabled}` and does
+**not** accept OpenAI's top-level `reasoning_effort` — its
+`supported_parameters` lists the former and omits the latter. There is
+therefore no low/medium/high gradient to map, and this adapter offers exactly
+two levels rather than advertising controls that would collapse onto the same
+two request bodies:
 
 | Selected effort | Wire body |
 |---|---|
-| `high` | `{"thinking": {"type": "enabled"}}` |
+| `high` ("Thinking") | `{"thinking": {"type": "enabled"}}` |
 | `off` | `{"thinking": {"type": "disabled"}}` |
-| *(none named)* | `{"thinking": {"type": "disabled"}}` |
+| *(none named)* | resolves from config; still explicit |
 
-`off` is spelled as a valueless key so that selecting it sends an explicit
-`disabled` rather than omitting the parameter — omitting it would hand the
-decision to LongCat's server-side default, which is not what "off" should mean.
+`off` serializes an explicit `disabled` rather than omitting the field —
+omitting it would hand the decision to LongCat's server-side default, which is
+not what selecting Off should mean. Requesting `low`, `medium`, or `max` fails
+with `UNSUPPORTED_REASONING_EFFORT` before any network I/O.
 
-No request carries `reasoning_effort` at any level. `tests/wire.test.js`
-asserts each of these bodies.
+## Wire-format notes
 
-## Model facts
+- **Tool-call deltas repeat `id` and `name` as explicit `null`.** LongCat sends
+  them on the opening delta and then `null` (not omitted) on every
+  continuation, so a naive `!== undefined` guard blanks the assembled call's
+  name. Verified on live traffic; pinned by a regression test.
+- Streaming only, with `stream_options.include_usage` always on. Usage may
+  arrive attached to the finish chunk or as a trailing usage-only chunk; both
+  are deferred to `[DONE]` so `usage` always precedes `finish`.
+- The first thinking-mode delta can be an empty string — it must not open a
+  reasoning block.
+- **Reasoning passback**: on assistant turns that carried tool calls,
+  `reasoning_content` is serialized back into history; on tool-call-free turns
+  it is dropped (ignored anyway — saves tokens).
+- Assistant `content` is always a string, never null: the message is durable
+  session history, and a null there would make later turns replay a body the
+  endpoint can reject.
+- Cache accounting: `prompt_tokens_details.cached_tokens` maps to
+  `cacheReadTokens` and is subtracted out of `inputTokens` to keep the
+  harness's disjoint-count convention.
 
-From `GET /openai/v1/models/LongCat-2.0`, which is the only documented endpoint
-that reports capabilities:
+## Errors
 
-| | |
+Non-2xx responses throw `LlmError` with stable codes. LongCat documents a
+dedicated **402** for exhausted token quota and puts `insufficient_quota` on
+**403**, where most OpenAI-compatible providers use 429 — both are classified
+as `QUOTA` before the auth and rate-limit buckets, so a depleted balance is
+never reported as a bad key or retried as a transient rate limit.
+
+| Condition | Code |
 |---|---|
-| Context | 1,048,576 tokens (1M) |
-| Max output | 131,072 (documented cap on the chat endpoint) |
-| Modality | text → text (**no image input**) |
-| Tool calling | yes (`tools`, `tool_choice`) |
-| Reasoning | yes (`thinking`) |
+| 402, or quota detail at any status | `QUOTA_EXCEEDED` |
+| 401 / 403 | `AUTH` |
+| 429 | `RATE_LIMIT` |
+| 400 with context-overflow detail | `CONTEXT_WINDOW_EXCEEDED` |
+| other 400 | `INVALID_REQUEST` |
+| 5xx | `SERVER` |
+| no `[DONE]` / bad JSON | `STREAM_CLOSED` / `MALFORMED_RESPONSE` |
 
-Note that tool calling is **not** mentioned on the chat-completions doc page;
-it is only visible in `supported_parameters` on the model-detail endpoint. The
-e2e script exercises it directly rather than trusting either page.
-
-### Verified against the live API
-
-`npm run test:e2e` passes 13/13 against `api.longcat.chat` (2026-08-20,
-`LongCat-2.0`). Confirmed there, not merely inferred from the docs:
-
-- `thinking: {type: enabled}` returns `reasoning_content` and reports
-  `usage.completion_tokens_details.reasoning_tokens`.
-- `thinking: {type: disabled}` returns **no** reasoning — so selecting Off
-  genuinely disables thinking rather than falling through to a server default.
-- Tool calling works: the model emits `tool_calls` with `arguments` as a raw
-  JSON string, which is what the adapter contract requires end to end.
-- Streaming delivers SSE frames and terminates with `[DONE]`, the marker the
-  adapter needs to keep `usage` ahead of `finish`.
-
-## Configuration
-
-Override anything in `$DSH_HOME/settings.yaml` without touching the bundle —
-settings win over the bundle's patch layer, and changes apply to the next
-request without a restart:
-
-```yaml
-llm-pi-ai:
-  providers:
-    longcat:
-      # Point at a gateway instead of the public endpoint.
-      baseURL: https://your-gateway.example/openai/v1
-      # Read the key from a different variable.
-      apiKeyEnv: MY_LONGCAT_KEY
-      # Bound how long one idle provider read may block (default 5 min).
-      streamIdleTimeoutMs: 300000
-```
-
-Careful with `models`: declaring that key **replaces** the bundle's model list
-rather than extending it, so every model you want served must appear in it. To
-adjust a single field, use `modelOverrides` keyed by model id instead.
+A completed stream that opened no content blocks becomes a `finish` error with
+`EMPTY_RESPONSE`, which the shipped retry policy treats as retryable.
 
 ## Tests
 
 ```sh
-npm test          # offline; asserts the exact wire bodies the config produces
-npm run test:e2e  # real API, needs LONGCAT_API_KEY, spends a few hundred tokens
+npm run typecheck   # against the published @deepseek-ai/dsh-llm types
+npm test            # 30 unit tests over serialize + translate
+npm run build       # emits lib/ and lib/types/
+npm run test:e2e    # real API, needs LONGCAT_API_KEY, spends a few hundred tokens
 ```
 
-The unit tests deliberately re-derive the request body from the shipped
-`cordis.patch.yml` rather than from a copy of the values, so editing the patch
-is what makes them fail. They cover the config; the e2e script covers the
-assumption that LongCat accepts it, including streaming, `[DONE]` framing, tool
-calls, and the model catalog.
+`test:e2e` drives the built adapter's own serialize → SSE → translate pipeline
+against `api.longcat.chat`, so it verifies what the plugin actually sends
+rather than a hand-written approximation. It is what caught the null-name
+delta bug.
 
 ## Limitations
 
-- **No image input.** LongCat-2.0 is text-only, so the harness refuses an
-  attached image before sending, naming the model. Do not add
-  `input: [text, image]` — it would state a claim the endpoint does not honor
-  and turn a clear client-side refusal into a provider error.
-- **Reasoning is binary.** There is no low/medium/high gradient to map; only
-  on and off are representable.
-- **`reasoning_effort` is unsupported** and intentionally never sent.
+- **No image input.** LongCat-2.0 reports `modality: text->text`, so image
+  content is refused before sending, naming the model.
+- **No stop sequences.** `stop` is absent from `supported_parameters`; passing
+  one fails with `UNSUPPORTED_OPTION` rather than silently running past it.
+- **Reasoning is binary** — no low/medium/high gradient exists to map.
 
 ## License
 

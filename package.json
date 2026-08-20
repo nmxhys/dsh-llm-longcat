@@ -1,7 +1,7 @@
 {
-  "name": "dsh-longcat",
+  "name": "dsh-llm-longcat",
   "version": "0.1.0",
-  "description": "LongCat (LongCat-2.0) model provider for DeepSeek Harness — 1M context, thinking mode, tool calling",
+  "description": "LongCat (LongCat-2.0) adapter for the DeepSeek Harness LLM seam — 1M context, thinking mode, tool calling",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -9,14 +9,20 @@
     "llm-provider"
   ],
   "type": "module",
-  "main": "index.js",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
   "license": "MIT",
-  "scripts": {
-    "test": "node --test tests/",
-    "test:e2e": "node tests/e2e.js"
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
+    "lib/**/*.js",
+    "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -24,5 +30,28 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "node tests/e2e.js"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "eventsource-parser": "^3.1.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-launch-environment": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-timeout": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
   }
 }
