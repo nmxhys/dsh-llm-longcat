@@ -40,6 +40,21 @@ dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#3dcb3b1b5870ba52b
 Then pick **LongCat-2.0** in the model selector. The key may also be stored
 through the Web UI's Models page instead of the environment.
 
+### If `dsh` itself will not install
+
+At the time of writing, installing the harness can fail before any plugin is
+reached, with either `ETARGET … dsh-typert-protocol@^0.1.0-rc.8` or an npm
+heap exhaustion. That is an upstream packaging state, not this plugin:
+`@deepseek-ai/dsh` published `0.1.0-rc.8` while several packages it depends on
+stopped at `0.1.0-rc.7`, and because the manifests use caret ranges,
+`^0.1.0-rc.7` still resolves up into the missing `rc.8`. npm then backtracks
+over an unsatisfiable graph until it runs out of memory.
+
+Pinning every `@deepseek-ai/*` package to an exact `0.1.0-rc.7` through npm
+`overrides` avoids the drift. Nothing in this plugin needs changing either
+way — it declares `>=0.1.0-rc.7` and works against whichever of those the
+host ends up with.
+
 ## Config
 
 ```yaml
