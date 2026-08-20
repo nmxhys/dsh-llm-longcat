@@ -80,6 +80,20 @@ Note that tool calling is **not** mentioned on the chat-completions doc page;
 it is only visible in `supported_parameters` on the model-detail endpoint. The
 e2e script exercises it directly rather than trusting either page.
 
+### Verified against the live API
+
+`npm run test:e2e` passes 13/13 against `api.longcat.chat` (2026-08-20,
+`LongCat-2.0`). Confirmed there, not merely inferred from the docs:
+
+- `thinking: {type: enabled}` returns `reasoning_content` and reports
+  `usage.completion_tokens_details.reasoning_tokens`.
+- `thinking: {type: disabled}` returns **no** reasoning — so selecting Off
+  genuinely disables thinking rather than falling through to a server default.
+- Tool calling works: the model emits `tool_calls` with `arguments` as a raw
+  JSON string, which is what the adapter contract requires end to end.
+- Streaming delivers SSE frames and terminates with `[DONE]`, the marker the
+  adapter needs to keep `usage` ahead of `finish`.
+
 ## Configuration
 
 Override anything in `$DSH_HOME/settings.yaml` without touching the bundle —
