@@ -63,7 +63,9 @@ if grep -q YOUR_GITHUB_USER README.md docs/*.md 2>/dev/null; then
   sed -i '' "s/COMMIT_SHA/${SHA}/g" README.md docs/*.md
   git add README.md docs
   git commit -q -m "Point install instructions at the published repository"
-  git push
+  # `gh repo create --push` configures origin, but the already-exists branch
+  # above may not have; name the remote and branch explicitly either way.
+  git push origin HEAD
 fi
 
 cat <<EOF
