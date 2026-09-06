@@ -40,6 +40,18 @@ dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#3dcb3b1b5870ba52b
 Then pick **LongCat-2.0** in the model selector. The key may also be stored
 through the Web UI's Models page instead of the environment.
 
+### Harness compatibility
+
+This adapter tracks the DeepSeek Harness `@deepseek-ai` release line it was
+written against: peer dependencies require `>=0.1.3-alpha.1`, because that
+line renamed the tool-call id brand (`CallId` → `ToolCallId`) and moved the
+optional-settings wiring onto the injected `settings` service
+(`ctx.settings.installSection`, with `deepEqualJson` split out to
+`@deepseek-ai/dsh-util-values`). A host from the older `rc.2` line fails at
+plugin load with `The requested module '@deepseek-ai/dsh-llm' does not provide
+an export named 'CallId'`; upgrade the harness rather than pinning this plugin
+back.
+
 ### If `dsh` itself will not install
 
 At the time of writing, installing the harness can fail before any plugin is
@@ -51,9 +63,8 @@ stopped at `0.1.0-rc.7`, and because the manifests use caret ranges,
 over an unsatisfiable graph until it runs out of memory.
 
 Pinning every `@deepseek-ai/*` package to an exact `0.1.0-rc.7` through npm
-`overrides` avoids the drift. Nothing in this plugin needs changing either
-way — it declares `>=0.1.0-rc.7` and works against whichever of those the
-host ends up with.
+`overrides` avoids the drift. That packaging state predates the alpha.1 line;
+the current peer floors (`>=0.1.3-alpha.1`) already assert the newer API.
 
 ## Config
 
