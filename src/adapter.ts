@@ -21,14 +21,20 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
+  ImageAttachmentAccessResolver,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  ModelModality,
+  RequestMessage,
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
+import { prepareImages } from './images.ts'
+import type { ImageSerializationContext } from './serialize.ts'
 import { serializeRequest } from './serialize.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { parseSse } from './sse.ts'
@@ -38,15 +44,26 @@ import type { WireError } from './types.ts'
 /** One optional model entry advertised by this adapter. */
 export interface LongCatCatalogModel {
   /** Wire model id accepted by the configured endpoint. */
-  id: string
+  readonly id: string
   /** Selector label; defaults to {@link id}. */
-  name?: string
+  readonly name?: string
   /** Optional selector detail. */
-  description?: string
+  readonly description?: string
   /** Known combined request/response context capacity. */
-  contextWindow?: number
+  readonly contextWindow?: number
   /** Per-request output cap for this model; omission falls back to the profile value. */
-  maxTokens?: number
+  readonly maxTokens?: number
+  /**
+   * Accepted request modalities; omission means text-only. LongCat-2.5-Preview
+   * reports `modality: text+image->text`; LongCat-2.0 is text-only, and an
+   * uncatalogued id declares the same negative capability so the host never
+   * durably accepts an image this route would then refuse.
+   */
+  readonly inputModalities?: readonly ModelModality[]
+  /** Total-pixel budget for one request image; defaults to 2048×2048. */
+  readonly imageMaxPixels?: number
+  /** Encoded-byte target for one request image; defaults to 1 MiB. */
+  readonly imageMaxBytes?: number
 }
 
 /**
@@ -72,6 +89,10 @@ export interface LongCatConnectionOptions {
   defaultContextWindow: number
   /** Advisory models exposed to discovery consumers; requests remain unrestricted. */
   models: readonly LongCatCatalogModel[]
+  /** Bound on the accumulated base64 payload of one request's images. */
+  maxRequestImageBytes: number
+  /** Optional bound on retained image occurrences per request. */
+  maxImagesPerRequest?: number
   /** Maximum provider idle time while one stream read is outstanding. */
   streamIdleTimeoutMs: number
   /** Provider-owned model-request retry policy, already resolved. */
@@ -88,6 +109,21 @@ export interface LongCatAdapterOptions {
    * from the same resolution as the endpoint it is sent to.
    */
   resolveApiKey: (connection: LongCatConnectionOptions) => Promise<string>
+  /**
+   * Mounted attachment provider, read per request. Absent means this
+   * deployment cannot send images at all: an image-bearing request fails with
+   * `UNSUPPORTED_CONTENT` instead of quietly dropping bytes.
+   */
+  resolveAttachments?: () => AttachmentStore | undefined
+  /**
+   * Resolve current execution-world access for one durable image, used to name
+   * the read-only copy in the text handle and in an offloaded placeholder.
+   * Absent degrades that text to its no-path form, never to silence.
+   */
+  resolveImageAccess?: (
+    attachments: AttachmentStore,
+    ref: ImageAttachmentRef,
+  ) => { readonlyPath: string } | undefined
 }
 
 /** Default maximum idle interval while a stream read is outstanding. */
@@ -122,7 +158,7 @@ function modelInfo(provider: string, model: LongCatCatalogModel): LlmModelInfo {
     id: model.id,
     name: model.name ?? model.id,
     ...model.description === undefined ? {} : { description: model.description },
-    inputModalities: ['text'],
+    inputModalities: model.inputModalities ?? ['text'],
   }
 }
 
@@ -204,10 +240,9 @@ export class LongCatAdapter extends LlmAdapter {
     const connection = this.config.options()
     const configured = connection.models.find(entry => entry.id === model)
     return Promise.resolve({
-      // The wire route is text-only regardless of catalog membership, so an
-      // uncatalogued id declares the same negative capability — "unknown"
-      // would let the host accept and durably persist images the serializer
-      // must then reject.
+      // An uncatalogued id declares text-only: "unknown" would let the host
+      // accept and durably persist images this adapter has no policy to
+      // encode, and the serializer would then have to refuse the turn.
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : modelInfo(provider, configured),
@@ -303,7 +338,15 @@ export class LongCatAdapter extends LlmAdapter {
     apiKey: string,
     onComment: () => void,
   ): AsyncIterable<StreamChunk> {
-    const body = serializeRequest(options, connection.defaults)
+    // Images are prepared before serialization: the request version bytes are
+    // the wire payload, and an over-budget or unsupported image must fail
+    // before any network I/O.
+    const prepared = await this.prepareRequestImages(options, connection, signal)
+    const body = serializeRequest(
+      { ...options, messages: prepared.messages as RequestMessage[] },
+      connection.defaults,
+      prepared.images,
+    )
     // Prepared outside the try so the TRANSPORT label below covers exactly
     // the transport boundary, never a serialization failure.
     const payload = JSON.stringify(body)
@@ -359,5 +402,43 @@ export class LongCatAdapter extends LlmAdapter {
     }
 
     yield* translate(parseSse(response.body, onComment))
+  }
+
+  /**
+   * Prepare one request's images.
+   *
+   * The attachment provider and the execution-world access resolver are read
+   * per request, so mounting or unmounting either reaches the next call. An
+   * image-bearing request without a provider fails here, before the fetch.
+   * @param options - the harness request.
+   * @param connection - the frozen connection facts of this request.
+   * @param signal - request cancellation, also covering image derivation.
+   * @returns the serializable history (offloaded occurrences already replaced
+   *   by placeholder text) and the request bytes, or no context for a text-only turn.
+   */
+  private async prepareRequestImages(
+    options: GenerateOptions,
+    connection: LongCatConnectionOptions,
+    signal: AbortSignal,
+  ): Promise<{ messages: readonly RequestMessage[]; images?: ImageSerializationContext }> {
+    const carriesImage = options.messages.some(
+      message => message.content.some(block => block.type === 'image'),
+    )
+    if (!carriesImage) return { messages: options.messages }
+    const attachments = this.config.resolveAttachments?.()
+    const access: ImageAttachmentAccessResolver = ref => attachments === undefined
+      ? undefined
+      : this.config.resolveImageAccess?.(attachments, ref)
+    const prepared = await prepareImages(options.messages, {
+      model: connection.models.find(entry => entry.id === options.model),
+      attachments,
+      access,
+      maxRequestImageBytes: connection.maxRequestImageBytes,
+      ...connection.maxImagesPerRequest === undefined
+        ? {}
+        : { maxImagesPerRequest: connection.maxImagesPerRequest },
+      signal,
+    })
+    return { messages: prepared.messages, images: { versions: prepared.versions, access } }
   }
 }

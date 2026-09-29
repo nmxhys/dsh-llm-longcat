@@ -2,25 +2,34 @@
 
 LongCat adapter for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) LLM seam.
 
-Adds **LongCat-2.0** as a model provider: 1M context, thinking mode, tool calling.
+Adds **LongCat-2.5-Preview** (text + image) and **LongCat-2.0** (text) as model
+providers: 1M context, thinking mode, tool calling.
 
 ## Features
 
 - **Thinking mode** — recognizes LongCat's `reasoning_content` field and translates it into harness `ReasoningBlock`s
 - **Tool calling** — full function-calling support, with `arguments` kept a raw JSON string end to end
+- **Images** — deterministic request-image preparation with inline `data:` parts, durable offload placeholders, and the harness's `IMAGE_OFFLOAD_REQUIRED` budget contract
 - **Multi-turn** — replays `reasoning_content` on tool-call turns, as thinking-mode passback requires
 - **Streaming** — SSE with the `usage`-before-`finish` ordering the harness relies on
 - **Credential seam** — the key resolves per request from `ctx.credentials` or the environment; no secret in any config file
 
 ## Supported models
 
-| Model | Context | Max output | Notes |
-|---|---|---|---|
-| `LongCat-2.0` | 1,048,576 | 131,072 | text-only; thinking + tool calling |
+| Model | Input | Context | Max output | Notes |
+|---|---|---|---|---|
+| `LongCat-2.5-Preview` | text + image | 1,048,576 | 131,072 | native multi-modal; thinking + tool calling |
+| `LongCat-2.0` | text | 1,048,576 | 131,072 | text-only; thinking + tool calling |
 
-Facts from `GET /openai/v1/models/LongCat-2.0`, the only documented endpoint that
-reports `supported_parameters`. Tool calling is **not** mentioned on the
-chat-completions doc page and is only visible there.
+Facts from `GET /openai/v1/models/{model}`, the only documented endpoint that
+reports `supported_parameters` and `architecture`. Tool calling and image input
+are **not** mentioned on the chat-completions doc page and are only visible
+there; both were verified against live traffic (see [Images](#images)).
+
+Prices (per 1M tokens, ¥): uncached input 2, cached input 0.04, output 8. The
+harness has no spend or cost seam — no consumer reports money — so these are
+documentation, not configuration; the LongCat platform's billing records are
+authoritative.
 
 ## Install
 
@@ -34,23 +43,30 @@ outside the sandbox the agent runs under. Pin a commit so a later push cannot
 change what executes:
 
 ```sh
-dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#3dcb3b1b5870ba52baab053453bdbb28826e5f13
+dsh plugin --profile default add github:ffyuuu/dsh-llm-longcat#<commit-sha>
 ```
 
-Then pick **LongCat-2.0** in the model selector. The key may also be stored
-through the Web UI's Models page instead of the environment.
+Then pick **LongCat-2.5-Preview** or **LongCat-2.0** in the model selector. The
+key may also be stored through the Web UI's Models page instead of the
+environment.
 
 ### Harness compatibility
 
 This adapter tracks the DeepSeek Harness `@deepseek-ai` release line it was
-written against: peer dependencies require `>=0.1.3-alpha.1`, because that
-line renamed the tool-call id brand (`CallId` → `ToolCallId`) and moved the
-optional-settings wiring onto the injected `settings` service
-(`ctx.settings.installSection`, with `deepEqualJson` split out to
-`@deepseek-ai/dsh-util-values`). A host from the older `rc.2` line fails at
-plugin load with `The requested module '@deepseek-ai/dsh-llm' does not provide
-an export named 'CallId'`; upgrade the harness rather than pinning this plugin
-back.
+written against; peer dependencies require `>=0.2.0-rc.1`. That line made tool
+results first-class `role: 'tool'` messages (the `tool-result` content block is
+gone), introduced `developer` messages for in-history tool changes, added
+`ImageBlock.offloaded` with the `IMAGE_OFFLOAD_REQUIRED` contract, and replaced
+the optional settings section with a config form projected from the plugin's own
+`Config` schema. Earlier lines fail in different ways:
+
+| Host line | Failure |
+|---|---|
+| `0.2.0-rc.1`+ | works (this build) |
+| `0.1.3-alpha.1` … `0.1.7` | `role: 'tool'` messages rejected; no image pipeline |
+| `rc.2` and older | plugin load fails: `does not provide an export named 'CallId'` |
+
+Upgrade the harness rather than pinning this plugin back.
 
 ### If `dsh` itself will not install
 
@@ -63,10 +79,14 @@ stopped at `0.1.0-rc.7`, and because the manifests use caret ranges,
 over an unsatisfiable graph until it runs out of memory.
 
 Pinning every `@deepseek-ai/*` package to an exact `0.1.0-rc.7` through npm
-`overrides` avoids the drift. That packaging state predates the alpha.1 line;
-the current peer floors (`>=0.1.3-alpha.1`) already assert the newer API.
+`overrides` avoids the drift. That packaging state predates the current lines;
+the peer floors already assert the newer API.
 
 ## Config
+
+Configuration lives in the profile's patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`)
+or in the harness settings form, which projects this plugin's `Config` schema.
+The bundle ships these defaults:
 
 ```yaml
 - id: llm-longcat
@@ -78,19 +98,51 @@ the current peer floors (`>=0.1.3-alpha.1`) already assert the newer API.
     reasoningEffort: high        # optional; off | high — LongCat's switch is binary
     maxTokens: 131072            # optional per-request output cap
     defaultContextWindow: 1048576
+    maxRequestImageBytes: 20971520  # optional; accumulated base64 image bound (20 MiB)
+    maxImagesPerRequest: 100     # optional; omission leaves the image count unbounded
     streamIdleTimeoutMs: 300000  # optional; five-minute default
     retryPolicy:                 # optional; omission uses bounded normal defaults
       mode: normal
       maxRetries: 3
     models:
-      - id: LongCat-2.0
+      - id: LongCat-2.5-Preview
         contextWindow: 1048576
+        inputModalities: [text, image]
+        imageMaxPixels: 4194304  # optional per-image pixel budget (2048×2048)
+        imageMaxBytes: 1048576   # optional per-image encoded-byte target (1 MiB)
 ```
 
-A `llm-longcat:` section in `$DSH_HOME/settings.yaml` overrides any field
-without a restart: base URL, catalog, request defaults, and idle budget all
-take effect on the next request, while an in-flight stream keeps the facts it
-started with.
+`apiKeyEnv`, `models`, and `retryPolicy` are volatile: editing the credential
+reference, the catalog, or the retry policy updates the running route in place,
+so an added model or a changed policy reaches the very next request. Every other
+field is re-resolved when the entry is re-applied. Either way an in-flight
+stream keeps the facts it started with.
+
+## Images
+
+`LongCat-2.5-Preview` accepts images; `LongCat-2.0` does not, and the catalog
+says so through `inputModalities`, which is what the host reads before it
+durably accepts an upload or substitutes placeholder text.
+
+- Every request image is re-encoded once into deterministic request bytes: the
+  route's pixel budget bounds its dimensions, its byte target bounds the
+  encoding, and the same history always produces the same request.
+- The wire carries the standard OpenAI content parts — a text handle naming the
+  image (with its read-only copy path) followed by an inline
+  `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` part.
+  LongCat's chat docs document `content` as a plain string only; the accepted
+  part array is visible in `architecture.input_modalities` and was verified by
+  reading rendered digits out of generated images over live traffic (the e2e
+  suite does exactly that).
+- An occurrence the session marked offloaded becomes placeholder text and is
+  never read. When retained occurrences still exceed `maxRequestImageBytes` or
+  `maxImagesPerRequest`, the request fails with `IMAGE_OFFLOAD_REQUIRED` naming
+  how many more of the oldest occurrences must be offloaded — the harness
+  advances its offload and retries, rather than this adapter dropping bytes.
+- No `imageRequestPricing` is declared: LongCat reports image tokens inside
+  `prompt_tokens` while `prompt_tokens_details.image_tokens` stays 0, so there
+  is no provider-published visual-token rule to price exactly. The token meter's
+  neutral heuristic stands, and provider usage remains the anchor.
 
 ## Reasoning is binary, deliberately
 
@@ -150,6 +202,8 @@ never reported as a bad key or retried as a transient rate limit.
 | other 400 | `INVALID_REQUEST` |
 | 5xx | `SERVER` |
 | no `[DONE]` / bad JSON | `STREAM_CLOSED` / `MALFORMED_RESPONSE` |
+| images beyond the route budget | `IMAGE_OFFLOAD_REQUIRED` (+ `offloadImages`) |
+| image on a text-only or unattached route | `UNSUPPORTED_CONTENT` |
 
 A completed stream that opened no content blocks becomes a `finish` error with
 `EMPTY_RESPONSE`, which the shipped retry policy treats as retryable.
@@ -157,24 +211,28 @@ A completed stream that opened no content blocks becomes a `finish` error with
 ## Tests
 
 ```sh
-npm run typecheck   # against the published @deepseek-ai/dsh-llm types
-npm test            # 30 unit tests over serialize + translate
+npm run typecheck   # against the @deepseek-ai packages of the target harness line
+npm test            # 66 unit tests over serialize + images + catalog + entry + translate
 npm run build       # emits lib/ and lib/types/
 npm run test:e2e    # real API, needs LONGCAT_API_KEY, spends a few hundred tokens
 ```
 
-`test:e2e` drives the built adapter's own serialize → SSE → translate pipeline
-against `api.longcat.chat`, so it verifies what the plugin actually sends
-rather than a hand-written approximation. It is what caught the null-name
-delta bug.
+`test:e2e` drives the built adapter's own image-preparation → serialize → SSE →
+translate pipeline against `api.longcat.chat`, so it verifies what the plugin
+actually sends rather than a hand-written approximation: it caught the null-name
+delta bug, and its image check renders a digit and requires the model to read it
+back.
 
 ## Limitations
 
-- **No image input.** LongCat-2.0 reports `modality: text->text`, so image
-  content is refused before sending, naming the model.
+- **`LongCat-2.0` has no image input.** It reports `modality: text->text`, so its
+  catalog entry advertises text-only; the host then substitutes placeholder text
+  instead of routing an image to it. Use `LongCat-2.5-Preview` for images.
 - **No stop sequences.** `stop` is absent from `supported_parameters`; passing
   one fails with `UNSUPPORTED_OPTION` rather than silently running past it.
 - **Reasoning is binary** — no low/medium/high gradient exists to map.
+- **No spend reporting.** The harness has no cost seam, so the published prices
+  cannot drive a total; see [Supported models](#supported-models).
 
 ## License
 

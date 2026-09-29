@@ -8,22 +8,34 @@
  * @module dsh-llm-longcat/adapter
  */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ModelModality, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials';
 import type { RequestDefaults } from './serialize.ts';
 import type { WireError } from './types.ts';
 /** One optional model entry advertised by this adapter. */
 export interface LongCatCatalogModel {
     /** Wire model id accepted by the configured endpoint. */
-    id: string;
+    readonly id: string;
     /** Selector label; defaults to {@link id}. */
-    name?: string;
+    readonly name?: string;
     /** Optional selector detail. */
-    description?: string;
+    readonly description?: string;
     /** Known combined request/response context capacity. */
-    contextWindow?: number;
+    readonly contextWindow?: number;
     /** Per-request output cap for this model; omission falls back to the profile value. */
-    maxTokens?: number;
+    readonly maxTokens?: number;
+    /**
+     * Accepted request modalities; omission means text-only. LongCat-2.5-Preview
+     * reports `modality: text+image->text`; LongCat-2.0 is text-only, and an
+     * uncatalogued id declares the same negative capability so the host never
+     * durably accepts an image this route would then refuse.
+     */
+    readonly inputModalities?: readonly ModelModality[];
+    /** Total-pixel budget for one request image; defaults to 2048×2048. */
+    readonly imageMaxPixels?: number;
+    /** Encoded-byte target for one request image; defaults to 1 MiB. */
+    readonly imageMaxBytes?: number;
 }
 /**
  * Validated connection facts for one operation. The plugin's
@@ -48,6 +60,10 @@ export interface LongCatConnectionOptions {
     defaultContextWindow: number;
     /** Advisory models exposed to discovery consumers; requests remain unrestricted. */
     models: readonly LongCatCatalogModel[];
+    /** Bound on the accumulated base64 payload of one request's images. */
+    maxRequestImageBytes: number;
+    /** Optional bound on retained image occurrences per request. */
+    maxImagesPerRequest?: number;
     /** Maximum provider idle time while one stream read is outstanding. */
     streamIdleTimeoutMs: number;
     /** Provider-owned model-request retry policy, already resolved. */
@@ -63,6 +79,20 @@ export interface LongCatAdapterOptions {
      * from the same resolution as the endpoint it is sent to.
      */
     resolveApiKey: (connection: LongCatConnectionOptions) => Promise<string>;
+    /**
+     * Mounted attachment provider, read per request. Absent means this
+     * deployment cannot send images at all: an image-bearing request fails with
+     * `UNSUPPORTED_CONTENT` instead of quietly dropping bytes.
+     */
+    resolveAttachments?: () => AttachmentStore | undefined;
+    /**
+     * Resolve current execution-world access for one durable image, used to name
+     * the read-only copy in the text handle and in an offloaded placeholder.
+     * Absent degrades that text to its no-path form, never to silence.
+     */
+    resolveImageAccess?: (attachments: AttachmentStore, ref: ImageAttachmentRef) => {
+        readonlyPath: string;
+    } | undefined;
 }
 /** Default maximum idle interval while a stream read is outstanding. */
 export declare const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
@@ -100,4 +130,17 @@ export declare class LongCatAdapter extends LlmAdapter {
     resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
     stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
     private request;
+    /**
+     * Prepare one request's images.
+     *
+     * The attachment provider and the execution-world access resolver are read
+     * per request, so mounting or unmounting either reaches the next call. An
+     * image-bearing request without a provider fails here, before the fetch.
+     * @param options - the harness request.
+     * @param connection - the frozen connection facts of this request.
+     * @param signal - request cancellation, also covering image derivation.
+     * @returns the serializable history (offloaded occurrences already replaced
+     *   by placeholder text) and the request bytes, or no context for a text-only turn.
+     */
+    private prepareRequestImages;
 }

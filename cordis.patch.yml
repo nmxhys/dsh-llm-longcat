@@ -1,12 +1,12 @@
 # dsh-llm-longcat — the bundle layer applied when a profile lists this package.
 #
 # Registers the `longcat` provider route on ctx.llm. Every field below is a
-# default the user's `llm-longcat:` settings section can override without a
-# restart; the API key is a reference resolved per request, so no secret
-# belongs in this file.
+# composition default: the same values are editable through the harness
+# settings form, which projects this plugin's Config schema. The API key is a
+# reference resolved per request, so no secret belongs in this file.
 #
-# Model facts come from GET /openai/v1/models/LongCat-2.0, the only documented
-# endpoint that reports capabilities.
+# Model facts come from GET /openai/v1/models/{model}, the only documented
+# endpoint that reports capabilities and modalities.
 
 - insert:
     - id: llm-longcat
@@ -17,7 +17,14 @@
         thinking: enabled
         reasoningEffort: high
         models:
+          - id: LongCat-2.5-Preview
+            name: LongCat-2.5-Preview
+            description: Native multi-modal agentic model; accepts text and images.
+            contextWindow: 1048576
+            maxTokens: 131072
+            inputModalities: [text, image]
           - id: LongCat-2.0
             name: LongCat-2.0
             contextWindow: 1048576
             maxTokens: 131072
+            inputModalities: [text]

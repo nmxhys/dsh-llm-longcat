@@ -4,8 +4,13 @@
  * Source of truth: the official API docs at
  * https://longcat.chat/platform/docs/zh/api/chat and the model-detail
  * endpoint `GET /openai/v1/models/{model}`, which is the only documented
- * place that reports `supported_parameters`. Verified against live streams
- * from `api.longcat.chat` (2026-08).
+ * place that reports `supported_parameters` and `architecture`. Verified
+ * against live streams from `api.longcat.chat` (2026-09).
+ *
+ * The docs describe `content` as a plain-text string, but `LongCat-2.5-Preview`
+ * reports `modality: text+image->text` and its endpoint accepts the standard
+ * OpenAI content-part array carrying `image_url` data URLs — verified live by
+ * reading rendered digits out of generated images.
  *
  * @module dsh-llm-longcat/types
  */
@@ -29,24 +34,45 @@ export interface WireRequest {
     tools?: WireTool[];
     temperature?: number;
     top_p?: number;
-    /** Documented cap for LongCat-2.0: 131072. */
+    /** Documented cap for both models: 131072. */
     max_tokens?: number;
 }
+/**
+ * One part of a multimodal wire `content` array. Text-only turns send a bare
+ * string instead of a single-element array, matching the documented shape.
+ */
+export type WireContentPart = {
+    type: 'text';
+    text: string;
+}
+/**
+ * Inline image. The durable attachment service re-encodes every request
+ * image, so the bytes always travel as a `data:` URL — a LongCat-reachable
+ * public URL does not exist for an uploaded attachment.
+ */
+ | {
+    type: 'image_url';
+    image_url: {
+        url: string;
+    };
+};
+/** Message content: a plain string for text-only turns, parts when images ride along. */
+export type WireContent = string | WireContentPart[];
 /** System-role message: a single string of instructions. */
 export interface WireSystemMessage {
     role: 'system';
     content: string;
 }
-/** User-role message: a single string of user input (LongCat is text-only). */
+/** User-role message: user input, with image parts on an image-capable route. */
 export interface WireUserMessage {
     role: 'user';
-    content: string;
+    content: WireContent;
 }
 /** Tool-role message: the result of one tool call, keyed by its call id. */
 export interface WireToolMessage {
     role: 'tool';
     tool_call_id: string;
-    content: string;
+    content: WireContent;
 }
 /**
  * Assistant-role history message. Text-less turns send `""` rather than null:
